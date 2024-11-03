@@ -22,10 +22,18 @@ class LipSyncDataset(Dataset):
     def __getitem__(self, idx):
         video_path = self.video_paths[idx]
         label = self.labels[idx]
-        length_error, _, combined_frames, residue_frames, _, _ = get_color_structure_frames(self.num_frames, video_path)
+        # length_error, _, combined_frames, residue_frames, _, _ = get_color_structure_frames(self.num_frames, video_path)
         
-        if length_error:
-            raise ValueError("Video too short")
+        try:
+            length_error, _, combined_frames, residue_frames, _, _ = get_color_structure_frames(self.num_frames, video_path)
+            
+            if length_error:
+                raise ValueError("Video too short")
+            if combined_frames is None or residue_frames is None or combined_frames.size == 0 or residue_frames.size == 0:
+                raise ValueError("No valid frames found")
+        except ValueError as e:
+            print(f"Skipping video {video_path} due to error: {e}")
+            return None
         
         # Reshape and convert frames to tensors
         # combined_frames = np.reshape(combined_frames, (1,) + combined_frames.shape)
@@ -38,6 +46,13 @@ class LipSyncDataset(Dataset):
         
         return combined_frames, residue_frames, label
 
+# Custom collate function to handle None values
+def collate_fn(batch):
+    batch = [data for data in batch if data is not None]
+    if len(batch) == 0:
+        return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
 # Training function
 def train_model(model, dataloader, criterion, optimizer, device, num_epochs=10):
     model.train()
@@ -47,7 +62,10 @@ def train_model(model, dataloader, criterion, optimizer, device, num_epochs=10):
         correct_predictions = 0
         total_predictions = 0
 
-        for combined_frames, residue_frames, labels in dataloader:
+        for data in dataloader:
+            if data is None:
+                continue
+            combined_frames, residue_frames, labels = data
             combined_frames = combined_frames.to(device)
             residue_frames = residue_frames.to(device)
             labels = labels.to(device)
@@ -89,7 +107,7 @@ def main():
 
     # Create dataset and dataloader
     dataset = LipSyncDataset(video_paths, labels)
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, collate_fn=collate_fn)
 
     # Initialize model, loss function, and optimizer
     model = LIPINCModel().to(device)

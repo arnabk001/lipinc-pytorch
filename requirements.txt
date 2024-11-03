@@ -1,0 +1,16 @@
+dlib==19.24.2
+dm-tree==0.1.8
+docutils==0.18.1
+imageio==2.31.6
+imageio-ffmpeg==0.4.9
+imutils==0.5.4
+moviepy==1.0.3
+nltk==3.8.1
+numpy
+pandas
+pandas-datareader
+pandas-gbq
+pandas-stubs
+scikit-learn
+matplotlib
+scikit-image

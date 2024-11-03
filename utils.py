@@ -209,6 +209,7 @@ def find_LGframes(n_frames,face_array,predictor):
 
   adj_f = []
   adj_f_id =[]
+  g_id=None
   No_face_count = 0
 
   # extract all frames
@@ -289,6 +290,7 @@ def find_LGframes(n_frames,face_array,predictor):
 
       except Exception as e:
         No_face_count+=1
+
         
   print("Face/lips not Detected in {} out of {} frames".format(No_face_count,len(face_array)))
   
@@ -338,6 +340,13 @@ def get_color_structure_frames(n_frames,path):
   # cv2.imwrite(os.path.join('/content/','face.png'), face_array[0]) 
   Local_frames , Global_frames, l_id,g_id = find_LGframes(n_frames,face_array,predictor)  #find local and global frames
 
+  if Local_frames.size == 1 or Global_frames.size == 1:
+    # print("local/global frame empty" )
+    length_error = True
+    return length_error, [], [], [], [], []
+
+  # print(Local_frames.shape)
+  # print(Global_frames.shape)
   combined_frames = np.concatenate((Local_frames,Global_frames))
   residue_frames = create_residue(combined_frames)
   

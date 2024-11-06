@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+# from torchmetrics.functional import structural_similarity_index_measure as ssim
 import math
 import numpy as np
-from skimage.metrics import structural_similarity
+from skimage.metrics import structural_similarity as ssim
+
 
 class DotProductAttention(nn.Module):
     def __init__(self):
@@ -144,32 +146,66 @@ class LIPINCModel(nn.Module):
         return out
 
 
-# Define the consistency loss calculation
-def similarity(a, b):
-    a_np = a.detach().cpu().numpy()
-    b_np = b.detach().cpu().numpy()
-    score, _ = structural_similarity(a_np, b_np, multichannel=True, full=True)
-    return score
+# # Define the consistency loss calculation
+# def similarity(a, b):
+#     a_np = a.detach().cpu().numpy()
+#     b_np = b.detach().cpu().numpy()
+#     score, _ = structural_similarity(a_np, b_np, multichannel=True, full=True)
+#     return score
 
-def total_loss(frame_input, model, y_true, y_pred):
-    # Cross-entropy loss
-    cce = criterion(y_pred, y_true)
-    
-    # Consistency loss
-    z = model.cnn_frame(frame_input)
-    tot = 0
-    batch_size = z.size(0)
-    for i in range(batch_size):
-        a = z[i]
-        for j in range(batch_size):
-            b = z[j]
-            sim = similarity(a, b)
-            tot += sim
-    
-    avg_sim = tot / (batch_size * batch_size)
-    bce = F.binary_cross_entropy(torch.tensor([avg_sim]), y_true.float())
-    
-    return cce + 5 * bce
+class CustomLoss(nn.Module):
+    def __init__(self, model):
+        super(CustomLoss, self).__init__()
+        self.model = model
+        self.cross_entropy = nn.CrossEntropyLoss()
+
+    def forward(self, frame_input, labels, predictions):
+        # Classification Loss (LCL)
+        cce_loss = self.cross_entropy(predictions, labels)
+
+        # Extract intermediate features from cnn_frame to calculate inconsistency loss (LIL)
+        with torch.no_grad():
+            features = self.model.cnn_frame(frame_input).cpu().numpy()  # Shape: (N, C', H', W'), where N is batch size, and C', H', W' are feature dimensions for each frame.
+
+        # Compute inconsistency loss (LIL) using SSIM within each sample in the batch
+        batch_size = features.shape[0]
+        total_inconsistency_loss = 0.0
+
+        for i in range(batch_size):
+            video_features = features[i]  # Shape: (N', C', H', W'), where N' is the number of frames in the video
+            num_frames = video_features.shape[0]
+            total_similarity = 0.0
+            num_pairs = 0
+
+            # Calculate SSIM between every pair of frames within the video
+            for f1 in range(num_frames):
+                for f2 in range(f1 + 1, num_frames):
+                    a = video_features[f1]
+                    b = video_features[f2]
+                    sim_score, _ = ssim(a, b, channel_axis=0, data_range=1.0, multichannel=True, full=True)  # Extract only the SSIM score
+                    total_similarity += (sim_score + 1)/2.0
+                    num_pairs += 1
+
+            # Calculate average similarity (AvgS) for the video
+            avg_similarity = total_similarity / num_pairs if num_pairs > 0 else 0
+
+            # Convert average similarity to a tensor and move to the correct device
+            avg_similarity_tensor = torch.tensor([avg_similarity], dtype=torch.float32, requires_grad=False).to(labels.device)
+
+            # Binary Cross-Entropy (BCE) loss for consistency
+            label_binary = (labels[i] > 0).float().view(1).to(labels.device)  # Convert label to float for BCE, expecting 0 (fake) or 1 (real)
+            bce_loss = F.binary_cross_entropy(avg_similarity_tensor, label_binary)
+
+            total_inconsistency_loss += bce_loss
+
+        # Average inconsistency loss across the batch
+        avg_inconsistency_loss = total_inconsistency_loss / batch_size
+
+        # Total Loss: Ltotal = λ1 * LCL + λ2 * LIL
+        total_loss = cce_loss + 5 * avg_inconsistency_loss
+
+        return total_loss
+
 
 if __name__ == "__main__":
     # Define the model

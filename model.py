@@ -157,7 +157,8 @@ class CustomLoss(nn.Module):
     def __init__(self, model):
         super(CustomLoss, self).__init__()
         self.model = model
-        self.cross_entropy = nn.CrossEntropyLoss()
+        self.cross_entropy = nn.CrossEntropyLoss(weight=torch.tensor([10.0,1.0]).to('cuda'))
+        # self.cross_entropy = nn.CrossEntropyLoss()
 
     def forward(self, frame_input, labels, predictions):
         # Classification Loss (LCL)
@@ -165,7 +166,7 @@ class CustomLoss(nn.Module):
 
         # Extract intermediate features from cnn_frame to calculate inconsistency loss (LIL)
         with torch.no_grad():
-            features = self.model.cnn_frame(frame_input).cpu().numpy()  # Shape: (N, C', H', W'), where N is batch size, and C', H', W' are feature dimensions for each frame.
+            features = self.model.cnn_frame(frame_input).cpu().numpy()  # Shape: (N, C', H', W')
 
         # Compute inconsistency loss (LIL) using SSIM within each sample in the batch
         batch_size = features.shape[0]
@@ -183,7 +184,11 @@ class CustomLoss(nn.Module):
                     a = video_features[f1]
                     b = video_features[f2]
                     sim_score, _ = ssim(a, b, channel_axis=0, data_range=1.0, multichannel=True, full=True)  # Extract only the SSIM score
-                    total_similarity += (sim_score + 1)/2.0
+                    # print("sim_score_raw = ",sim_score)
+                    sim_score_scaled = (sim_score + 0.5) # assuming range [-0.5, 0.5] -> [0,1]
+                    # print("sim_score_scaled = ",sim_score)
+                    total_similarity += np.clip(sim_score_scaled, 0, 1)
+                    # total_similarity += (sim_score + 1)/2.0  # scale between [0-1]
                     num_pairs += 1
 
             # Calculate average similarity (AvgS) for the video
@@ -193,7 +198,9 @@ class CustomLoss(nn.Module):
             avg_similarity_tensor = torch.tensor([avg_similarity], dtype=torch.float32, requires_grad=False).to(labels.device)
 
             # Binary Cross-Entropy (BCE) loss for consistency
-            label_binary = (labels[i] > 0).float().view(1).to(labels.device)  # Convert label to float for BCE, expecting 0 (fake) or 1 (real)
+            # label_binary = (labels[i] > 0).float().view(1).to(labels.device)  # Convert label to float for BCE, expecting 0 (fake) or 1 (real)
+            label_binary = (labels[i] == 0).float().view(1).to(labels.device)  # Now: 0 (fake) -> 1, 1 (real) -> 0
+            # print(f"avg_ssim = {avg_similarity_tensor}, label = {label_binary}")
             bce_loss = F.binary_cross_entropy(avg_similarity_tensor, label_binary)
 
             total_inconsistency_loss += bce_loss
@@ -201,10 +208,11 @@ class CustomLoss(nn.Module):
         # Average inconsistency loss across the batch
         avg_inconsistency_loss = total_inconsistency_loss / batch_size
 
+        loss_weights = torch.tensor([1.0,4.0]).to(labels.device)
         # Total Loss: Ltotal = λ1 * LCL + λ2 * LIL
-        total_loss = cce_loss + 5 * avg_inconsistency_loss
+        total_loss = loss_weights[0]*cce_loss + loss_weights[1]*avg_inconsistency_loss
 
-        return total_loss
+        return total_loss #/loss_weights.sum()
 
 
 if __name__ == "__main__":
